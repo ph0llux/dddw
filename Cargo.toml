@@ -1,0 +1,20 @@
+[package]
+name = "dddw"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.2.7", features = [ "derive" ] }
+log = "0.4.14"
+comfy-table = "7.1.1"
+env_logger = "0.11.5"
+windows-drives = "0.5.0"
+winapi = { version = "0.3.9", features = ["handleapi", "fileapi", "winerror", "minwindef", "ioapiset", "winioctl", "winbase", "winnt"] }
+indicatif = "0.17.8"
+
+[profile.release]
+lto = true              # enables link time optimization
+panic = 'unwind'        # unwinds the stack if panic
+strip = "symbols"		# ... to reduce binary size ...
+debug = false           # I won't see any debug options in release mode.
+opt-level = 2           # optimized for speed.
