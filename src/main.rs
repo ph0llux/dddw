@@ -3,21 +3,22 @@ use std::process::exit;
 use std::path::PathBuf;
 use std::error::Error;
 use std::ptr;
-use std::io::{self, Read, Write, BufReader, BufWriter};
+use std::io::{self, Read, Write};
 use std::fs::File;
-use std::thread;
-use std::time::Duration;
-use std::{cmp::min, fmt::Write as OtherWrite};
 
 // - modules
 #[cfg(target_family = "windows")]
 mod listdevices;
+#[cfg(target_family = "windows")]
+mod checkpriv;
 #[cfg(target_family = "windows")]
 mod dump;
 mod constants;
 mod traits;
 
 // - internal
+#[cfg(target_family = "windows")]
+use checkpriv::*;
 #[cfg(target_family = "windows")]
 use listdevices::*;
 #[cfg(target_family = "windows")]
@@ -35,7 +36,7 @@ use clap::{
     ValueEnum,
 };
 use log::{LevelFilter, error};
-use indicatif::{ProgressBar, ProgressState, ProgressStyle, HumanBytes};
+use indicatif::{ProgressBar, ProgressStyle};
 
 #[cfg(target_family = "windows")]
 use comfy_table::{
@@ -44,8 +45,6 @@ use comfy_table::{
     presets::UTF8_FULL,
 };
 
-#[cfg(target_family = "windows")]
-use windows_drives::drive::{BufferedPhysicalDrive, BufferedHarddiskVolume};
 #[cfg(target_family = "windows")]
 use winapi::{
     shared::{
@@ -61,10 +60,14 @@ use winapi::{
             OPEN_EXISTING,
             CreateFileW,
         },
+        securitybaseapi::{
+            GetTokenInformation,
+        },
+        processthreadsapi::OpenProcessToken,
         handleapi::{INVALID_HANDLE_VALUE, CloseHandle},
         ioapiset::DeviceIoControl,
         winioctl::{IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER, IOCTL_DISK_GET_DRIVE_GEOMETRY, DISK_GEOMETRY},
-        winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE},
+        winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE, TOKEN_ELEVATION, TokenElevation, TOKEN_QUERY},
     },
 };
 
@@ -147,6 +150,18 @@ fn main() {
             exit(EXIT_STATUS_SUCCESS);
         },
         Commands::Dump { inputfile, outputfile } => {
+            match is_elevated() {
+                Ok(elevated) => {
+                    if !elevated {
+                        error!("You need to run this program as administrator.");
+                        exit(EXIT_STATUS_ERROR);
+                    }
+                },
+                Err(e) => {
+                    error!("{}", e);
+                    exit(EXIT_STATUS_ERROR);
+                }
+            }
             let (input, size) = open_physical_drive(inputfile).unwrap();
             match dump(input, outputfile, size) {
                 Ok(_) => {
@@ -163,17 +178,15 @@ fn main() {
 
 #[cfg(target_family = "windows")]
 fn dump<R: Read>(mut input: R, outputfile: String, size: u64) -> Result<()> {
-    use std::io::BufRead;
 
     let mut output = File::create(outputfile.clone() + ".img")?;
 
     let pb = ProgressBar::new(size);
-    pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes}")
+    pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes}({eta})")
         .unwrap()
         .progress_chars("#>-"));
 
     let mut buffer = vec![0u8; CHUNK_SIZE];
-    let mut bytes_read = 0;
     loop {
         let r = match input.read(&mut buffer) {
             Ok(r) => r,
@@ -185,7 +198,6 @@ fn dump<R: Read>(mut input: R, outputfile: String, size: u64) -> Result<()> {
         if r == 0 {
             break;
         }
-        bytes_read += r;
         pb.inc(r as u64);
         output.write_all(&buffer[..r])?;
     }
